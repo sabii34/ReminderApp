@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -18,17 +17,31 @@ import { IconButton } from '@src/components/IconButton';
 import { Text } from '@src/components/Text';
 import { TextField } from '@src/components/TextField';
 import { Colors } from '@src/constants/colors';
-import { MAPBOX_ACCESS_TOKEN } from '@src/constants/config';
 import { Radius, Spacing } from '@src/constants/layout';
 import { nextFullHour, startOfDay } from '@src/helpers/date';
 import { formatCoordinate } from '@src/helpers/geo';
+
 import {
   LocationPicker,
   PickerValue,
   SearchLocationFocus,
 } from '@src/modules/reminders/components/LocationPicker';
+
 import { DEFAULT_GEOFENCE_RADIUS } from '@src/modules/reminders/constants';
 import { Reminder, ReminderDraft } from '@src/modules/reminders/types';
+
+import {
+  searchNearbyPlaces,
+  searchPlacesInBounds,
+} from '@src/services/locationSearch/overpassService';
+
+import { searchCities } from '@src/services/locationSearch/cityGeocoder';
+
+import type {
+  SearchBounds,
+  SearchResult,
+  CitySearchResult,
+} from '@src/services/locationSearch/locationSearchTypes';
 
 export interface ReminderFormSheetProps {
   visible: boolean;
@@ -39,25 +52,7 @@ export interface ReminderFormSheetProps {
   onClose: () => void;
 }
 
-interface SearchResult {
-  id: string;
-  name: string;
-  address: string;
-  coordinate: Position;
-}
-
-interface MapboxFeature {
-  id?: string;
-  geometry?: {
-    coordinates?: number[];
-  };
-  properties?: {
-    name?: string;
-    name_preferred?: string;
-    full_address?: string;
-    place_formatted?: string;
-  };
-}
+type SearchAreaMode = 'gps' | 'map';
 
 const TITLE_MAX_LENGTH = 60;
 const NOTES_MAX_LENGTH = 200;
@@ -106,17 +101,32 @@ const ReminderForm = (
     radius: reminder?.radius ?? DEFAULT_GEOFENCE_RADIUS,
   });
 
+  // Place search
   const [searchText, setSearchText] = useState('');
-  const [searchResults, setSearchResults] = useState<
-    SearchResult[]
-  >([]);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
+
+  // Separate city search
+  const [citySearchText, setCitySearchText] = useState('');
+  const [cityResults, setCityResults] = useState<CitySearchResult[]>([]);
+  const [isSearchingCity, setIsSearchingCity] = useState(false);
+  const [citySearchError, setCitySearchError] = useState('');
+
+  // Map search area
+  const [visibleBounds, setVisibleBounds] =
+    useState<SearchBounds | null>(null);
+
+  const [searchAreaMode, setSearchAreaMode] =
+    useState<SearchAreaMode>('gps');
+
   const [searchFocus, setSearchFocus] =
     useState<SearchLocationFocus | null>(null);
 
   const searchRequestId = useRef(0);
+  const citySearchRequestId = useRef(0);
   const searchSelectionId = useRef(0);
+  const selectedCityRef = useRef('');
 
   const [isAdjustingMap, setIsAdjustingMap] =
     useState(false);
@@ -128,7 +138,11 @@ const ReminderForm = (
   const canSave =
     !!trimmedTitle && !!location.coordinate;
 
-  // Search Mapbox when the user stops typing.
+  // ---------------------------------------------------------
+  // PLACE SEARCH
+  // GPS FIRST -> VISIBLE MAP FALLBACK
+  // ---------------------------------------------------------
+
   useEffect(() => {
     const query = searchText.trim();
 
@@ -144,122 +158,166 @@ const ReminderForm = (
     const controller = new AbortController();
 
     const timer = setTimeout(async () => {
-      if (!MAPBOX_ACCESS_TOKEN) {
-        setSearchError(
-          'Mapbox access token is missing.',
-        );
-        setIsSearching(false);
-        return;
-      }
-
       setIsSearching(true);
       setSearchError('');
 
       try {
-        // Global search with nearby-result prioritization.
-        const params = [
-          `q=${encodeURIComponent(query)}`,
-          `access_token=${encodeURIComponent(
-            MAPBOX_ACCESS_TOKEN,
-          )}`,
-          'autocomplete=true',
-          'limit=5',
-          'language=en',
-        ];
+        let results: SearchResult[] = [];
 
-        // Prioritize locations near the user's current position.
-        if (userCoordinate) {
-          params.push(
-            `proximity=${userCoordinate[0]},${userCoordinate[1]}`,
+        // GPS mode: search around the user's current location.
+        if (
+          searchAreaMode === 'gps' &&
+          userCoordinate
+        ) {
+          results = await searchNearbyPlaces(
+            query,
+            userCoordinate,
+            5000,
+            controller.signal,
           );
         }
 
-        const url =
-          'https://api.mapbox.com/search/geocode/v6/forward?' +
-          params.join('&');
-
-        const response = await fetch(url, {
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          throw new Error(
-            `Location search failed (${response.status})`,
-          );
-        }
-
-        const data: {
-          features?: MapboxFeature[];
-        } = await response.json();
-
-        if (requestId !== searchRequestId.current) {
+        if (
+          controller.signal.aborted ||
+          requestId !== searchRequestId.current
+        ) {
           return;
         }
 
-        const results: SearchResult[] = (
-          data.features ?? []
-        )
-          .filter(feature => {
-            const coordinates =
-              feature.geometry?.coordinates;
+        // If GPS search finds nothing, search the visible map.
+        // Map mode searches only the visible map area.
+        if (
+          results.length === 0 &&
+          visibleBounds
+        ) {
+          // Keep the search scoped to the selected city after moving the map.
+          const cityScopedQuery =
+            searchAreaMode === 'map' && citySearchText.trim()
+              ? `${query}, ${citySearchText.trim()}`
+              : query;
 
-            return (
-              Array.isArray(coordinates) &&
-              coordinates.length >= 2 &&
-              Number.isFinite(coordinates[0]) &&
-              Number.isFinite(coordinates[1])
-            );
-          })
-          .map((feature, index) => {
-            const properties = feature.properties ?? {};
+          results = await searchPlacesInBounds(
+            cityScopedQuery,
+            visibleBounds,
+            controller.signal,
+          );
+        }
 
-            const coordinates =
-              feature.geometry!.coordinates!;
-
-            return {
-              id: feature.id ?? String(index),
-
-              name:
-                properties.name_preferred ??
-                properties.name ??
-                'Unnamed location',
-
-              address:
-                properties.full_address ??
-                properties.place_formatted ??
-                '',
-
-              coordinate: [
-                coordinates[0],
-                coordinates[1],
-              ],
-            };
-          });
+        if (
+          controller.signal.aborted ||
+          requestId !== searchRequestId.current
+        ) {
+          return;
+        }
 
         setSearchResults(results);
 
         if (results.length === 0) {
           setSearchError(
-            'No matching locations found.',
+            searchAreaMode === 'gps'
+              ? 'No matching places found nearby or in the visible map area. Try searching for a city below.'
+              : 'No matching places found in this map area. Move the map or search for another city.',
           );
         }
       } catch (error) {
-        if (controller.signal.aborted) {
+        if (
+          controller.signal.aborted ||
+          requestId !== searchRequestId.current
+        ) {
           return;
         }
 
-        if (requestId !== searchRequestId.current) {
-          return;
-        }
+        console.error('[POI SEARCH ERROR]', error);
 
         setSearchResults([]);
-
         setSearchError(
-          'Unable to search locations. Check your connection and Mapbox token.',
+          error instanceof Error
+            ? error.message
+            : 'Unknown POI search error.',
         );
       } finally {
         if (requestId === searchRequestId.current) {
           setIsSearching(false);
+        }
+      }
+    }, 500);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    searchText,
+    userCoordinate,
+    visibleBounds,
+    searchAreaMode,
+  ]);
+
+  // ---------------------------------------------------------
+  // CITY SEARCH
+  // GEOAPIFY
+  // ---------------------------------------------------------
+
+  useEffect(() => {
+    const query = citySearchText.trim();
+
+    // Keep the selected city visible without searching for it again.
+    if (query && query === selectedCityRef.current) {
+      setCityResults([]);
+      setCitySearchError('');
+      setIsSearchingCity(false);
+      return;
+    }
+
+    const requestId = ++citySearchRequestId.current;
+
+    if (query.length < 3) {
+      setCityResults([]);
+      setCitySearchError('');
+      setIsSearchingCity(false);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const timer = setTimeout(async () => {
+      setIsSearchingCity(true);
+      setCitySearchError('');
+
+      try {
+        const results = await searchCities(
+          query,
+          controller.signal,
+        );
+
+        if (
+          controller.signal.aborted ||
+          requestId !== citySearchRequestId.current
+        ) {
+          return;
+        }
+
+        setCityResults(results);
+
+        if (results.length === 0) {
+          setCitySearchError('No matching cities found.');
+        }
+      } catch {
+        if (
+          controller.signal.aborted ||
+          requestId !== citySearchRequestId.current
+        ) {
+          return;
+        }
+
+        setCityResults([]);
+
+        setCitySearchError(
+          'Unable to search cities. Check your internet connection and Geoapify API key.',
+        );
+      } finally {
+        if (requestId === citySearchRequestId.current) {
+          setIsSearchingCity(false);
         }
       }
     }, 450);
@@ -268,13 +326,15 @@ const ReminderForm = (
       clearTimeout(timer);
       controller.abort();
     };
+  }, [citySearchText]);
 
-  }, [searchText, userCoordinate]);
+  // ---------------------------------------------------------
+  // SELECT A CITY OR A REAL PLACE
+  // ---------------------------------------------------------
 
-  const handleSelectLocation = (
+  const handleSelectPlace = (
     result: SearchResult,
   ) => {
-    // Cancel outstanding search responses.
     searchRequestId.current += 1;
 
     setSearchText('');
@@ -282,13 +342,13 @@ const ReminderForm = (
     setSearchError('');
     setIsSearching(false);
 
-    // Keep the current geofence radius.
+    // A real POI selection updates the reminder location.
+    // Keep the existing geofence radius.
     setLocation(previous => ({
       coordinate: result.coordinate,
       radius: previous.radius,
     }));
 
-    // Explicit camera request.
     searchSelectionId.current += 1;
 
     setSearchFocus({
@@ -296,6 +356,73 @@ const ReminderForm = (
       requestId: searchSelectionId.current,
     });
   };
+
+  const handleSelectCity = (
+    city: CitySearchResult,
+  ) => {
+    citySearchRequestId.current += 1;
+    searchRequestId.current += 1;
+
+    selectedCityRef.current = city.name;
+    setCitySearchText(city.name);
+    setCityResults([]);
+    setCitySearchError('');
+
+    setSearchText('');
+    setSearchResults([]);
+    setSearchError('');
+
+    // Switch to map mode so POI searches do not return
+    // results from the user's original GPS location.
+    setSearchAreaMode('map');
+
+    searchSelectionId.current += 1;
+
+    // IMPORTANT:
+    // Selecting a city moves the map only.
+    // It does not update the reminder's saved coordinate.
+    setSearchFocus({
+      coordinate: city.coordinate,
+      requestId: searchSelectionId.current,
+      bounds: city.bounds,
+    });
+  };
+
+  // ---------------------------------------------------------
+  // USE MY LOCATION
+  // ---------------------------------------------------------
+
+  const handleUseMyLocation = () => {
+    setSearchAreaMode('gps');
+
+    searchRequestId.current += 1;
+    citySearchRequestId.current += 1;
+
+    setSearchText('');
+    setSearchResults([]);
+    setSearchError('');
+
+    setCitySearchText('');
+    setCityResults([]);
+    setCitySearchError('');
+
+    setIsSearching(false);
+    setIsSearchingCity(false);
+  };
+
+  // ---------------------------------------------------------
+  // MAP VISIBLE BOUNDS
+  // ---------------------------------------------------------
+
+  const handleVisibleBoundsChange = (
+    bounds: SearchBounds,
+  ) => {
+    setVisibleBounds(bounds);
+  };
+
+  // ---------------------------------------------------------
+  // SAVE REMINDER
+  // ---------------------------------------------------------
 
   const handleSave = async () => {
     if (!location.coordinate || isSaving) {
@@ -321,8 +448,14 @@ const ReminderForm = (
     }
   };
 
+  // ---------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------
+
   return (
     <View style={styles.main}>
+      {/* HEADER */}
+
       <View style={styles.header}>
         <View style={styles.headerTexts}>
           <Text size="title" weight="bold">
@@ -345,9 +478,7 @@ const ReminderForm = (
               icon="trash-outline"
               color="danger"
               accessibilityLabel="Delete reminder"
-              onPress={() =>
-                onDeletePress(reminder)
-              }
+              onPress={() => onDeletePress(reminder)}
             />
           )}
 
@@ -366,6 +497,8 @@ const ReminderForm = (
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
+        {/* TITLE */}
+
         <TextField
           label="Reminder title"
           trailingIcon="notifications-outline"
@@ -375,6 +508,8 @@ const ReminderForm = (
           returnKeyType="done"
           maxLength={TITLE_MAX_LENGTH}
         />
+
+        {/* NOTES */}
 
         <TextField
           label="Notes (optional)"
@@ -393,6 +528,8 @@ const ReminderForm = (
           maxLength={NOTES_MAX_LENGTH}
         />
 
+        {/* DATE AND TIME */}
+
         <DateTimeField
           label="Due Date & Time"
           value={remindAt}
@@ -404,14 +541,112 @@ const ReminderForm = (
           }
         />
 
-        {/* LOCATION SEARCH */}
+        {/* ------------------------------------------------- */}
+        {/* CITY SEARCH */}
+        {/* ------------------------------------------------- */}
+
         <View style={styles.searchSection}>
           <Text
             weight="semiBold"
             size="caption"
             style={styles.sectionLabel}
           >
-            Search Location
+            Search City or Country
+          </Text>
+
+          <View style={styles.searchInputRow}>
+            <Icon
+              name="globe-outline"
+              size={20}
+              color="primary"
+            />
+
+            <TextInput
+              style={styles.searchInput}
+              placeholder="e.g. London, Manchester..."
+              placeholderTextColor="#888888"
+              value={citySearchText}
+              onChangeText={text => {
+                selectedCityRef.current = '';
+                setCitySearchText(text);
+              }}
+              autoCorrect={false}
+              autoCapitalize="words"
+              returnKeyType="search"
+              accessibilityLabel="Search city or country"
+            />
+
+            {isSearchingCity && (
+              <ActivityIndicator
+                size="small"
+                color={Colors.primary}
+              />
+            )}
+          </View>
+
+          {cityResults.length > 0 && (
+            <View style={styles.resultsContainer}>
+              {cityResults.map(city => (
+                <Pressable
+                  key={city.id}
+                  style={styles.resultRow}
+                  accessibilityRole="button"
+                  onPress={() => handleSelectCity(city)}
+                >
+                  <Icon
+                    name="business-outline"
+                    size={18}
+                    color="primary"
+                  />
+
+                  <View style={styles.resultText}>
+                    <Text weight="semiBold">
+                      {city.name}
+                    </Text>
+
+                    {!!city.address && (
+                      <Text
+                        size="caption"
+                        color="subtext"
+                      >
+                        {city.address}
+                      </Text>
+                    )}
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {!!citySearchError && (
+            <Text
+              size="caption"
+              color="subtext"
+              style={styles.searchMessage}
+            >
+              {citySearchError}
+            </Text>
+          )}
+
+          <Text
+            size="caption"
+            color="subtext"
+          >
+            Select a city to move the map. This will not set your reminder location.
+          </Text>
+        </View>
+
+        {/* ------------------------------------------------- */}
+        {/* POI SEARCH */}
+        {/* ------------------------------------------------- */}
+
+        <View style={styles.searchSection}>
+          <Text
+            weight="semiBold"
+            size="caption"
+            style={styles.sectionLabel}
+          >
+            Search Place or Business
           </Text>
 
           <View style={styles.searchInputRow}>
@@ -423,14 +658,14 @@ const ReminderForm = (
 
             <TextInput
               style={styles.searchInput}
-              placeholder="Search a place or address..."
+              placeholder="Search a mall, shop, hospital..."
               placeholderTextColor="#888888"
               value={searchText}
               onChangeText={setSearchText}
               autoCorrect={false}
               autoCapitalize="words"
               returnKeyType="search"
-              accessibilityLabel="Search location"
+              accessibilityLabel="Search place or business"
             />
 
             {isSearching && (
@@ -448,9 +683,7 @@ const ReminderForm = (
                   key={result.id}
                   style={styles.resultRow}
                   accessibilityRole="button"
-                  onPress={() =>
-                    handleSelectLocation(result)
-                  }
+                  onPress={() => handleSelectPlace(result)}
                 >
                   <Icon
                     name="location-outline"
@@ -486,9 +719,21 @@ const ReminderForm = (
               {searchError}
             </Text>
           )}
+
+          <Text
+            size="caption"
+            color="subtext"
+          >
+            {searchAreaMode === 'gps'
+              ? 'Searching near your current GPS location first, then the visible map area.'
+              : 'Searching places inside the visible map area.'}
+          </Text>
         </View>
 
+        {/* ------------------------------------------------- */}
         {/* LOCATION AND GEOFENCE */}
+        {/* ------------------------------------------------- */}
+
         <View>
           <View style={styles.locationLabelRow}>
             <Text
@@ -512,9 +757,7 @@ const ReminderForm = (
                   weight="semiBold"
                   color="primaryDark"
                 >
-                  {formatCoordinate(
-                    location.coordinate,
-                  )}
+                  {formatCoordinate(location.coordinate)}
                 </Text>
               </View>
             )}
@@ -526,9 +769,13 @@ const ReminderForm = (
             onChange={setLocation}
             onAdjustingChange={setIsAdjustingMap}
             searchFocus={searchFocus}
+            onVisibleBoundsChange={handleVisibleBoundsChange}
+            onUseMyLocation={handleUseMyLocation}
           />
         </View>
       </ScrollView>
+
+      {/* SAVE BUTTON */}
 
       <View style={styles.actions}>
         <Button
@@ -543,34 +790,45 @@ const ReminderForm = (
   );
 };
 
+// ---------------------------------------------------------
+// STYLES
+// ---------------------------------------------------------
+
 const styles = StyleSheet.create({
   main: {
     flexShrink: 1,
   },
+
   header: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     marginBottom: Spacing.lg,
   },
+
   headerTexts: {
     flexShrink: 1,
   },
+
   headerSubtitle: {
     marginTop: 2,
   },
+
   headerActions: {
     flexDirection: 'row',
     gap: Spacing.sm,
     marginLeft: Spacing.md,
   },
+
   scroll: {
     flexShrink: 1,
   },
+
   scrollContent: {
     gap: Spacing.lg,
     paddingBottom: Spacing.sm,
   },
+
   locationLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -578,10 +836,12 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     marginBottom: Spacing.sm,
   },
+
   sectionLabel: {
     letterSpacing: 0.6,
     textTransform: 'uppercase',
   },
+
   coordinateChip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -591,9 +851,11 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     backgroundColor: Colors.primaryMuted,
   },
+
   searchSection: {
     gap: Spacing.sm,
   },
+
   searchInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -603,17 +865,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     minHeight: 50,
   },
+
   searchInput: {
     flex: 1,
     color: Colors.text,
     fontSize: 15,
     paddingVertical: Spacing.sm,
   },
+
   resultsContainer: {
     backgroundColor: Colors.cardBg,
     borderRadius: Radius.md,
     overflow: 'hidden',
   },
+
   resultRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -622,13 +887,16 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: Colors.inputBg,
   },
+
   resultText: {
     flex: 1,
     gap: 3,
   },
+
   searchMessage: {
     marginTop: Spacing.xs,
   },
+
   actions: {
     paddingTop: Spacing.md,
   },

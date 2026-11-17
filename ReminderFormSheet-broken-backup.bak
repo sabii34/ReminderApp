@@ -1,0 +1,98 @@
+
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
+import type { Position } from 'geojson';
+
+import { BottomSheet } from '@src/components/BottomSheet';
+import { Button } from '@src/components/Button';
+import { DateTimeField } from '@src/components/DateTimeField';
+import { Icon } from '@src/components/Icon';
+import { IconButton } from '@src/components/IconButton';
+import { Text } from '@src/components/Text';
+import { TextField } from '@src/components/TextField';
+import { Colors } from '@src/constants/colors';
+import {
+  searchNearbyPlaces,
+  searchPlacesInBounds,
+} from '@src/services/locationSearch/overpassService';
+
+import { searchCities } from '@src/services/locationSearch/cityGeocoder';
+
+import type {
+  SearchBounds,
+  SearchResult,
+} from '@src/services/locationSearch/locationSearchTypes';
+import { Radius, Spacing } from '@src/constants/layout';
+import { nextFullHour, startOfDay } from '@src/helpers/date';
+import { formatCoordinate } from '@src/helpers/geo';
+import {
+  LocationPicker,
+  PickerValue,
+  SearchLocationFocus,
+} from '@src/modules/reminders/components/LocationPicker';
+import { DEFAULT_GEOFENCE_RADIUS } from '@src/modules/reminders/constants';
+import { Reminder, ReminderDraft } from '@src/modules/reminders/types';
+
+export interface ReminderFormSheetProps {
+  visible: boolean;
+  reminder: Reminder | null;
+  userCoordinate: Position | null;
+  onSave: (draft: ReminderDraft) => Promise<boolean>;
+  onDeletePress: (reminder: Reminder) => void;
+  onClose: () => void;
+}
+
+
+const TITLE_MAX_LENGTH = 60;
+const NOTES_MAX_LENGTH = 200;
+
+export const ReminderFormSheet = (
+  props: ReminderFormSheetProps,
+) => {
+  const { visible, onClose } = props;
+
+  return (
+    <BottomSheet visible={visible} onClose={onClose}>
+      <ReminderForm {...props} />
+    </BottomSheet>
+  );
+};
+
+const ReminderForm = (
+  props: ReminderFormSheetProps,
+) => {
+  const {
+    reminder,
+    userCoordinate,
+    onSave,
+    onDeletePress,
+    onClose,
+  } = props;
+
+  const isEditing = !!reminder;
+
+  const [title, setTitle] = useState(
+    reminder?.title ?? '',
+  );
+
+  const [description, setDescription] = useState(
+    reminder?.description ?? '',
+  );
+
+  const [remindAt, setRemindAt] = useState(() =>
+    reminder
+      ? new Date(reminder.remindAt)
+      : nextFullHour(),
+  );
+
+  const [location, setLocation] = useState<PickerValue>({
+    coordinate: reminder?.coordinate ?? userCoordinate,
+    radius: reminder?.radius ?? DEFAULT_GEOFENCE_RADIUS,
+  });

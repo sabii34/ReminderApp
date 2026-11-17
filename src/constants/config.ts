@@ -1,10 +1,17 @@
-import { MAPBOX_ACCESS_TOKEN as ENV_MAPBOX_ACCESS_TOKEN } from '@env';
+import {
+  MAPBOX_ACCESS_TOKEN as ENV_MAPBOX_ACCESS_TOKEN,
+  GEOAPIFY_API_KEY as ENV_GEOAPIFY_API_KEY,
+} from '@env';
 
 /**
- * Mapbox public access token (starts with "pk."), read from .env.
- * Create one at https://account.mapbox.com/access-tokens/
+ * Mapbox public access token.
  */
 export const MAPBOX_ACCESS_TOKEN = ENV_MAPBOX_ACCESS_TOKEN;
+
+/**
+ * Geoapify API key for city and area geocoding.
+ */
+export const GEOAPIFY_API_KEY = ENV_GEOAPIFY_API_KEY;
 
 export const MapConfig = {
   userZoomLevel: 15,

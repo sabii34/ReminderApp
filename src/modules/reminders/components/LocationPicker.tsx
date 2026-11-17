@@ -10,6 +10,7 @@ import React, {
 import { Pressable, StyleSheet, View } from 'react-native';
 import Mapbox from '@rnmapbox/maps';
 import type { Feature, Point, Position } from 'geojson';
+import type { SearchBounds } from '@src/services/locationSearch/locationSearchTypes';
 
 import { Icon } from '@src/components/Icon';
 import { Text } from '@src/components/Text';
@@ -40,6 +41,7 @@ export interface PickerValue {
 export interface SearchLocationFocus {
   coordinate: Position;
   requestId: number;
+  bounds?: SearchBounds;
 }
 
 interface LocationPickerProps {
@@ -48,7 +50,13 @@ interface LocationPickerProps {
   onChange: (value: PickerValue) => void;
   onAdjustingChange: (isAdjusting: boolean) => void;
   searchFocus?: SearchLocationFocus | null;
+  onVisibleBoundsChange?: (bounds: SearchBounds) => void;
+  onUseMyLocation?: () => void;
 }
+
+type CameraFocus = Geofence & {
+  bounds?: SearchBounds;
+};
 
 const CAMERA_PADDING = {
   paddingTop: Spacing.xl,
@@ -69,6 +77,8 @@ export const LocationPicker = (props: LocationPickerProps) => {
     onChange,
     onAdjustingChange,
     searchFocus,
+    onVisibleBoundsChange,
+    onUseMyLocation,
   } = props;
 
   const { coordinate, radius } = value;
@@ -77,28 +87,43 @@ export const LocationPicker = (props: LocationPickerProps) => {
   const [handleBearing, setHandleBearing] = useState(
     DEFAULT_HANDLE_BEARING,
   );
+
   const [isDragging, setIsDragging] = useState(false);
 
   const mapRef = useRef<Mapbox.MapView>(null);
   const mapContainerRef = useRef<ComponentRef<typeof View>>(null);
 
-  const [cameraFocus, setCameraFocus] = useState<Geofence | null>(
+  const [cameraFocus, setCameraFocus] = useState<CameraFocus | null>(
     coordinate ? { coordinate, radius } : null,
   );
 
-  const cameraBounds = useMemo(
-    () =>
-      cameraFocus
-        ? getCircleBounds(
-            cameraFocus.coordinate,
-            cameraFocus.radius,
-          )
-        : undefined,
-    [cameraFocus],
-  );
+  // Use city geographic bounds when a city is selected.
+  // Otherwise use the existing geofence circle bounds.
+  const cameraBounds = useMemo(() => {
+    if (!cameraFocus) {
+      return undefined;
+    }
 
-  // Move the camera only when the user selects a search result.
-  // Normal pin dragging does not trigger this effect.
+    if (cameraFocus.bounds) {
+      return {
+        ne: [
+          cameraFocus.bounds.east,
+          cameraFocus.bounds.north,
+        ] as Position,
+        sw: [
+          cameraFocus.bounds.west,
+          cameraFocus.bounds.south,
+        ] as Position,
+      };
+    }
+
+    return getCircleBounds(
+      cameraFocus.coordinate,
+      cameraFocus.radius,
+    );
+  }, [cameraFocus]);
+
+  // Move the camera when an explicit search selection occurs.
   useEffect(() => {
     if (!searchFocus) {
       return;
@@ -107,7 +132,9 @@ export const LocationPicker = (props: LocationPickerProps) => {
     setCameraFocus({
       coordinate: searchFocus.coordinate,
       radius,
+      bounds: searchFocus.bounds,
     });
+
     // requestId identifies each explicit search selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchFocus?.requestId]);
@@ -135,10 +162,34 @@ export const LocationPicker = (props: LocationPickerProps) => {
   );
 
   const handleMapLoaded = () => {
-    if (coordinate) {
-      setCameraFocus({ coordinate, radius });
-    }
+    setCameraFocus(current => {
+      // Do not overwrite a city camera selection.
+      if (current?.bounds) {
+        return current;
+      }
+
+      if (coordinate) {
+        return { coordinate, radius };
+      }
+
+      return current;
+    });
   };
+
+  // Report the currently visible map boundaries to the parent.
+  const handleMapIdle = useCallback(
+    (state: Mapbox.MapState) => {
+      const { ne, sw } = state.properties.bounds;
+
+      onVisibleBoundsChange?.({
+        north: ne[1],
+        east: ne[0],
+        south: sw[1],
+        west: sw[0],
+      });
+    },
+    [onVisibleBoundsChange],
+  );
 
   const handlePinDrag = (nextCoordinate: Position) => {
     onChange({
@@ -174,6 +225,7 @@ export const LocationPicker = (props: LocationPickerProps) => {
     onAdjustingChange(false);
   };
 
+  // Return the map and search workflow to the user's GPS location.
   const handleUseMyLocation = () => {
     if (!userCoordinate) {
       return;
@@ -188,6 +240,8 @@ export const LocationPicker = (props: LocationPickerProps) => {
       coordinate: userCoordinate,
       radius,
     });
+
+    onUseMyLocation?.();
   };
 
   return (
@@ -214,6 +268,7 @@ export const LocationPicker = (props: LocationPickerProps) => {
           zoomEnabled={!isDragging}
           styleURL={Mapbox.StyleURL.Street}
           surfaceView={false}
+          onMapIdle={handleMapIdle}
           compassEnabled={false}
           scaleBarEnabled={false}
           onPress={handleMapPress}
@@ -232,9 +287,7 @@ export const LocationPicker = (props: LocationPickerProps) => {
             }
             bounds={cameraBounds}
             padding={CAMERA_PADDING}
-            animationDuration={
-              MapConfig.animationDuration
-            }
+            animationDuration={MapConfig.animationDuration}
           />
 
           {!!coordinate && !!handleCoordinate && (
