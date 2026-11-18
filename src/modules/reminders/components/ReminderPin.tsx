@@ -15,8 +15,8 @@ interface ReminderPinProps {
 export const ReminderPin = ({ isCompleted = false }: ReminderPinProps) => (
   <View style={[styles.main, isCompleted && styles.completed]}>
     <Icon
-      name={isCompleted ? 'checkmark' : 'notifications'}
-      size={14}
+     name={isCompleted ? 'checkmark' : 'navigate-outline'}
+size={18}
       color="white"
     />
   </View>

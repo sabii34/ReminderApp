@@ -108,3 +108,12 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+# Additional sensitive and temporary files
+*.jks
+*.backup
+android/gradle.properties
+gradle.properties
+
+# Android release artifacts
+*.apk
+*.aab

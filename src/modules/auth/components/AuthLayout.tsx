@@ -1,3 +1,4 @@
+
 import React, { ReactNode } from 'react';
 import {
   KeyboardAvoidingView,
@@ -19,17 +20,11 @@ import { useResponsive } from '@src/hooks/useResponsive';
 import { BrandMark } from '@src/modules/auth/components/BrandMark';
 
 interface AuthLayoutProps {
-  /** Short name shown in the top bar, e.g. "Login". */
   screenTitle: string;
   title: string;
   subtitle: string;
-  /**
-   * "centered": brand mark and centered heading, form on a white card.
-   * "plain": left-aligned heading with an optional eyebrow chip.
-   */
   variant?: 'centered' | 'plain';
   eyebrow?: string;
-  /** Form-level error, e.g. wrong credentials. */
   error?: string | null;
   children: ReactNode;
   footer: ReactNode;
@@ -46,6 +41,7 @@ export const AuthLayout = (props: AuthLayoutProps) => {
     children,
     footer,
   } = props;
+
   const navigation = useNavigation();
   const { top, bottom } = useSafeAreaInsets();
   const { contentMaxWidth } = useResponsive();
@@ -54,15 +50,22 @@ export const AuthLayout = (props: AuthLayoutProps) => {
   return (
     <KeyboardAvoidingView
       style={styles.main}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? top : 0}
     >
       <ScrollView
+        style={styles.scroll}
         contentContainerStyle={[
           styles.content,
-          { paddingTop: top + Spacing.sm, paddingBottom: bottom + Spacing.xl },
+          {
+            paddingTop: top + Spacing.sm,
+            paddingBottom: bottom + Spacing.xl,
+          },
         ]}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
       >
         <View style={[styles.inner, { maxWidth: contentMaxWidth }]}>
           <View style={styles.topBar}>
@@ -77,7 +80,9 @@ export const AuthLayout = (props: AuthLayoutProps) => {
                 <Icon name="chevron-back" size={26} color="text" />
               </Pressable>
             )}
+
             <Icon name="location" size={22} color="primary" />
+
             <Text
               size="title"
               weight="bold"
@@ -112,15 +117,21 @@ export const AuthLayout = (props: AuthLayoutProps) => {
             <View style={styles.plainIntro}>
               {!!eyebrow && (
                 <View style={styles.eyebrow}>
-                  <Icon name="navigate-outline" size={12} color="primaryDark" />
+                  <Icon
+                    name="navigate-outline"
+                    size={12}
+                    color="primaryDark"
+                  />
                   <Text size="caption" weight="semiBold" color="primaryDark">
                     {eyebrow}
                   </Text>
                 </View>
               )}
+
               <Text weight="bold" style={styles.plainTitle}>
                 {title}
               </Text>
+
               <Text color="subtext" size="subtitle" style={styles.subtitle}>
                 {subtitle}
               </Text>
@@ -136,6 +147,7 @@ export const AuthLayout = (props: AuthLayoutProps) => {
                 </Text>
               </View>
             )}
+
             {children}
           </View>
 
@@ -150,6 +162,9 @@ const styles = StyleSheet.create({
   main: {
     flex: 1,
     backgroundColor: Colors.screenBg,
+  },
+  scroll: {
+    flex: 1,
   },
   content: {
     flexGrow: 1,

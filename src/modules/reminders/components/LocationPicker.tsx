@@ -262,12 +262,18 @@ export const LocationPicker = (props: LocationPickerProps) => {
         ]}
       >
         <Mapbox.MapView
-          ref={mapRef}
-          style={styles.map}
-          scrollEnabled={!isDragging}
-          zoomEnabled={!isDragging}
-          styleURL={Mapbox.StyleURL.Street}
-          surfaceView={false}
+  ref={mapRef}
+  style={styles.map}
+  scrollEnabled={!isDragging}
+  zoomEnabled={!isDragging}
+  requestDisallowInterceptTouchEvent={true}
+  gestureSettings={{
+    panEnabled: true,
+    pinchZoomEnabled: true,
+    pinchPanEnabled: true,
+  }}
+  styleURL={Mapbox.StyleURL.Street}
+  surfaceView={false}
           onMapIdle={handleMapIdle}
           compassEnabled={false}
           scaleBarEnabled={false}
